@@ -46,6 +46,7 @@ If `CURRENT_USER` is empty: tell the user to run `gh auth login` first and stop.
 ## Phase 1 — Check for Existing GitHub Project
 
 ```bash
+# List all projects owned by the repo owner
 gh project list --owner "$REPO_OWNER" --format json --limit 20 2>/dev/null
 ```
 
@@ -57,67 +58,31 @@ Parse the JSON output. Look for a project whose `title` matches or contains `$RE
 - Show current board stats:
   ```bash
   gh project view $PROJECT_NUMBER --owner "$REPO_OWNER" --format json 2>/dev/null | jq '{title, url, number}'
+  # Count issues by status
   gh issue list --repo "$REPO_OWNER/$REPO_NAME" --json number,title,assignees,milestone,labels --limit 100 2>/dev/null | jq 'length'
   ```
 - Ask the user: "A project board already exists. Do you want to (1) add new issues to this sprint, (2) plan the next sprint from the backlog, or (3) start fresh?" Wait for their answer before continuing.
-- If continuing, skip Phase 2 entirely and go to Phase 3.
 
 **If no matching project is found:**
+- Print: `No GitHub Project found for this repo. Creating one now...`
 - Continue to Phase 2.
 
 ---
 
-## Phase 2 — Prompt User to Create the Project Board Manually
+## Phase 2 — Create the Project Board (only if no project exists)
 
-> **Why manual?** The GitHub CLI and API can create a blank project, but they cannot create or configure Status field columns (Backlog, Ready, In Progress, etc.). Project templates in the GitHub UI are the only way to get a pre-configured board with the right columns. Do not attempt `gh project create` — it produces a blank board with no usable columns.
-
-Print this message to the user and wait for them to complete each step before continuing:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- ACTION REQUIRED — Create the GitHub Project manually
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-The GitHub CLI cannot create project columns — you need to do
-this once in the browser using a sprint template.
-
-Step 1 — Open GitHub Projects:
-  https://github.com/REPO_OWNER?tab=projects
-  (replace REPO_OWNER with the actual owner)
-
-Step 2 — Click "New project"
-
-Step 3 — Choose a template
-  Pick a sprint or scrum template that includes these columns:
-    Backlog → Ready → In Progress → In Review → Done
-  Recommended built-in templates:
-    • "Team backlog"  — has Backlog, Ready, In Progress, Done
-    • "Scrum"         — has full sprint fields including sprints
-  If you have a saved custom template, use that instead.
-
-Step 4 — Name the project
-  Use exactly: REPO_NAME
-
-Step 5 — Link the project to this repository
-  Inside the new project → Settings → Linked repositories
-  → Add repository → REPO_OWNER/REPO_NAME
-
-Step 6 — Come back here and type "done"
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-Wait for the user to type "done" (or confirm they've finished) before continuing.
-
-**After confirmation — verify the project now exists:**
 ```bash
-gh project list --owner "$REPO_OWNER" --format json --limit 20 2>/dev/null
+# Create the project
+gh project create --title "$REPO_NAME" --owner "$REPO_OWNER" --format json 2>/dev/null
 ```
 
-Look for a project matching `$REPO_NAME`. If still not found, tell the user:
-"Project not detected yet. Double-check the project name matches exactly, then type 'done' again."
-Repeat the verification until it is found. Store the project number as `PROJECT_NUMBER`.
+Store the returned project number as `PROJECT_NUMBER`.
 
-**Read the project's field configuration:**
+The default project is created with a basic Status field. Verify that the Status field has the correct columns. The required columns for this workflow are:
+
+**Backlog → Ready → In Progress → In Review → Done**
+
+To check existing Status options:
 ```bash
 gh api graphql -f query='
 query($owner: String!, $number: Int!) {
@@ -139,24 +104,13 @@ query($owner: String!, $number: Int!) {
 ' -f owner="$REPO_OWNER" -F number=$PROJECT_NUMBER --jq '.data.user.projectV2'
 ```
 
-If the owner is an organization, replace `user(login:...)` with `organization(login:...)`.
+If the project is under an organization (not a user), replace `user(login:...)` with `organization(login:...)` in the query.
 
-Store `PROJECT_ID`, `STATUS_FIELD_ID`, and the option IDs for each status column.
+Store `PROJECT_ID` (the `id` field from the query above) and `STATUS_FIELD_ID` and each option's ID for use in later phases.
 
-Print the detected columns so the user can confirm they match:
-```
-✓ Project found: "REPO_NAME" (#PROJECT_NUMBER)
-  Status columns detected:
-    • Backlog      (id: ...)
-    • Ready        (id: ...)
-    • In Progress  (id: ...)
-    • In Review    (id: ...)
-    • Done         (id: ...)
-```
+If the Status field is missing the required columns, tell the user: "Please add these columns manually in the GitHub UI: Backlog, Ready, In Progress, In Review, Done. The GitHub API does not support adding new Status options programmatically. Once added, run /plan-project again." Then stop.
 
-If fewer than 4 Status options are detected, warn the user: "Your project template may be missing some columns. Expected: Backlog, Ready, In Progress, In Review, Done. You can add missing columns in the project Settings on GitHub, then type 'continue'." Wait before proceeding.
-
-Print: `✓ Project board ready. Continuing with planning...`
+Print: `✓ Project board ready at: https://github.com/users/$REPO_OWNER/projects/$PROJECT_NUMBER`
 
 ---
 
